@@ -1,0 +1,89 @@
+#include <ntddk.h>
+
+// Undocumented function to open a handle to a process
+NTSTATUS NTAPI ZwOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, PCLIENT_ID ClientId);
+
+// Undocumented function to allocate memory in a process
+NTSTATUS NTAPI ZwAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, ULONG_PTR ZeroBits, PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
+
+// Undocumented function to write to a process's memory
+NTSTATUS NTAPI ZwWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
+
+// Undocumented function to map a driver into a process
+NTSTATUS NTAPI ZwLoadDriver(PUNICODE_STRING DriverServiceName);
+
+// Undocumented function to retrieve the address of a module's export
+NTSTATUS NTAPI ZwGetProcedureAddress(HANDLE ModuleHandle, PVOID ProcedureName, ULONG ProcedureNumber, PVOID *ProcedureAddress);
+
+// Undocumented function to call a function in a remote process
+NTSTATUS NTAPI ZwQueueApcThread(HANDLE ThreadHandle, PIO_APC_ROUTINE ApcRoutine, PVOID ApcRoutineContext, PIO_STATUS_BLOCK ApcStatusBlock, ULONG ApcReserved);
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath)
+{
+    // Open the target process
+    HANDLE hProcess = NULL;
+    CLIENT_ID cid = { 1234 }; // Replace 1234 with the ID of the target process
+    OBJECT_ATTRIBUTES oa = { 0 };
+    NTSTATUS status = ZwOpenProcess(&hProcess, PROCESS_ALL_ACCESS, &oa, &cid);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error opening process: 0x%X\n", status);
+        return status;
+    }
+
+    // Allocate memory in the target process for the DLL's path
+    PVOID lpRemoteMemory = NULL;
+    SIZE_T regionSize = strlen("\\SystemRoot\\dllfolder\\mydll.dll") + 1;
+    status = ZwAllocateVirtualMemory(hProcess, &lpRemoteMemory, 0, &regionSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error allocating memory: 0x%X\n", status);
+        return status;
+    }
+
+    // Write the DLL's path to the allocated memory
+    SIZE_T bytesWritten = 0;
+    status = ZwWriteVirtualMemory(hProcess, lpRemoteMemory, "\\SystemRoot\\system32\\drivers\\mydll.sys", regionSize, &bytesWritten);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error writing memory: 0x%X\n", status);
+        return status;
+    }
+
+    // Map the DLL into the target process
+    status = ZwLoadDriver((PUNICODE_STRING)lpRemoteMemory);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error loading DLL: 0x%X\n", status);
+        return status;
+    }
+
+    // Retrieve the address of the DLL's export
+    PVOID pFunc = NULL;
+    status = ZwGetProcedureAddress(NULL, "myExport", 0, &pFunc);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error getting function address: 0x%X\n", status);
+        return status;
+    }
+
+    // Call the export
+    HANDLE hRemoteThread = NULL;
+    cid.UniqueThread = 0;
+    status = ZwOpenThread(&hRemoteThread, THREAD_ALL_ACCESS, &oa, &cid);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error opening thread: 0x%X\n", status);
+        return status;
+    }
+
+    IO_STATUS_BLOCK iosb = { 0 };
+    status = ZwQueueApcThread(hRemoteThread, (PIO_APC_ROUTINE)pFunc, NULL, &iosb, 0);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Error calling function: 0x%X\n", status);
+        return status;
+    }
+
+    return STATUS_SUCCESS;
+}
